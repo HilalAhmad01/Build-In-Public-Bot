@@ -1,0 +1,9 @@
+cat > .gitignore << 'EOF'
+.env
+venv/
+.venv/
+__pycache__/
+*.pyc
+EOF
+git add .gitignore
+git commit -m "add gitignore"
