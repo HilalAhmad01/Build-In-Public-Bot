@@ -1,6 +1,4 @@
-import os
 from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint.postgres import PostgresSaver
 
 from state import TweetBotState
 from nodes import (
@@ -14,10 +12,13 @@ from nodes import (
     log_result,
 )
 
-DATABASE_URL = os.environ["DATABASE_URL"]
 
-
-def build_graph():
+def build_graph(checkpointer):
+    """
+    Wires the graph together and compiles it with a checkpointer that the
+    CALLER opened and is responsible for keeping alive (see run_pipeline.py).
+    This function no longer manages the Postgres connection itself.
+    """
     builder = StateGraph(TweetBotState)
 
     builder.add_node("fetch_repo_data", fetch_repo_data)
@@ -46,13 +47,6 @@ def build_graph():
 
     builder.add_edge("post_tweet", "log_result")
     builder.add_edge("log_result", END)
-
-    # Postgres checkpointer: this is what lets the graph pause at
-    # request_approval and survive until you resume it later, even
-    # across server restarts.
-    checkpointer_cm = PostgresSaver.from_conn_string(DATABASE_URL)
-    checkpointer = checkpointer_cm.__enter__()
-    checkpointer.setup()  # creates the checkpoint tables on first run, safe to call repeatedly
 
     graph = builder.compile(checkpointer=checkpointer)
     return graph

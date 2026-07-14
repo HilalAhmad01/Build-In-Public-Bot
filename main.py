@@ -1,27 +1,70 @@
 import hashlib
 import hmac
 import os
+from contextlib import asynccontextmanager
 
+import psycopg2
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
+from langgraph.checkpoint.postgres import PostgresSaver
 
-from fetch_readme import fetch_readme
-from readme_checker import is_readme_ready
+from graph_build import build_graph
 
 load_dotenv()
 
-app = FastAPI()
 WEBHOOK_SECRET = os.environ["GITHUB_WEBHOOK_SECRET"].encode()
+DATABASE_URL = os.environ["DATABASE_URL"]
+
+# These get set once at startup and reused for every request —
+# see lifespan() below.
+app_state = {}
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Runs once when the app boots (and once at shutdown).
+    Opens a single long-lived Postgres connection for the LangGraph
+    checkpointer and builds the graph, instead of doing this per-request.
+    """
+    checkpointer_cm = PostgresSaver.from_conn_string(DATABASE_URL)
+    checkpointer = checkpointer_cm.__enter__()
+    checkpointer.setup()  # safe to call every startup, no-op if tables exist
+
+    graph = build_graph(checkpointer)
+
+    app_state["graph"] = graph
+    app_state["checkpointer_cm"] = checkpointer_cm
+
+    print("Startup complete: graph + checkpointer ready")
+
+    yield  # app runs here
+
+    # Shutdown: close the Postgres connection cleanly
+    checkpointer_cm.__exit__(None, None, None)
+    print("Shutdown complete: checkpointer connection closed")
+
+
+app = FastAPI(lifespan=lifespan)
 
 
 def verify_signature(payload_body: bytes, signature_header: str):
     if not signature_header:
         raise HTTPException(status_code=403, detail="Missing signature")
-    expected = (
-        "sha256=" + hmac.new(WEBHOOK_SECRET, payload_body, hashlib.sha256).hexdigest()
-    )
+    expected = "sha256=" + hmac.new(WEBHOOK_SECRET, payload_body, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, signature_header):
         raise HTTPException(status_code=403, detail="Invalid signature")
+
+
+def get_repo_status(full_name: str):
+    conn = psycopg2.connect(DATABASE_URL)
+    cur = conn.cursor()
+    cur.execute("SELECT status FROM repo_status WHERE full_name = %s", (full_name,))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return row[0] if row else None
 
 
 @app.post("/webhook")
@@ -34,19 +77,31 @@ async def webhook(
     verify_signature(body, x_hub_signature_256)
     payload = await request.json()
 
-    if x_github_event == "push":
-        full_name = payload["repository"]["full_name"]  # e.g. "HilalAhmad01/Minds-Eye"
-        owner, repo = full_name.split("/")
-        print(f"push event received for repo {full_name}")
+    if x_github_event != "push":
+        return {"status": "ignored", "reason": "not a push event"}
 
-        try:
-            readme_text = fetch_readme(owner, repo)
-            result = is_readme_ready(readme_text)
-            print(f"README ready check for {full_name}: {result['ready']}")
-            print(
-                f"  words={result['word_count']} headers={result['header_count']} has_image={result['has_image']}"
-            )
-        except Exception as e:
-            print(f"Failed to fetch/check README for {full_name}: {e}")
+    full_name = payload["repository"]["full_name"]
+    owner, repo = full_name.split("/")
 
-    return {"status": "ok"}
+    current_status = get_repo_status(full_name)
+    if current_status in ("ready", "posted"):
+        print(f"{full_name} already processed (status={current_status}), skipping")
+        return {"status": "skipped", "reason": current_status}
+
+    print(f"push event received for repo {full_name}, starting graph run")
+
+    graph = app_state["graph"]
+    config = {"configurable": {"thread_id": full_name}}
+    initial_state = {"owner": owner, "repo": repo, "full_name": full_name}
+
+    # graph.invoke() is blocking (Postgres + Gemini calls), so push it onto
+    # a threadpool instead of running it directly on the event loop —
+    # otherwise a slow Gemini call would stall every other request.
+    result = await run_in_threadpool(graph.invoke, initial_state, config=config)
+
+    if "__interrupt__" in result:
+        print(f"{full_name}: paused for approval, draft ready")
+        return {"status": "awaiting_approval", "repo": full_name}
+
+    print(f"{full_name}: run finished without pausing (README likely not ready yet)")
+    return {"status": "not_ready", "repo": full_name}
