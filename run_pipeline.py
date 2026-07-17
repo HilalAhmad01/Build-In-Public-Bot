@@ -1,10 +1,12 @@
+from langgraph.types import Command
+from langgraph.checkpoint.postgres import PostgresSaver
+from graph_build import build_graph
+
+
 import os
 from dotenv import load_dotenv
 load_dotenv()
 
-from langgraph.types import Command
-from langgraph.checkpoint.postgres import PostgresSaver
-from graph_build import build_graph
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 

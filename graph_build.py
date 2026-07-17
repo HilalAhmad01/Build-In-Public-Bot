@@ -12,7 +12,6 @@ from nodes import (
     log_result,
 )
 
-
 def build_graph(checkpointer):
 
     builder = StateGraph(TweetBotState)

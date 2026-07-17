@@ -3,21 +3,21 @@ import psycopg2
 from langgraph.types import interrupt
 
 from state import TweetBotState
-from fetch_readme import fetch_readme          # your existing module
-from readme_checker import is_readme_ready     # your existing module
+from fetch_readme import fetch_readme
+from readme_checker import is_readme_ready
 from telegram_bot import send_approval_request
 
 import google.generativeai as genai
 
 genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-GEMINI_MODEL = genai.GenerativeModel("gemini-1.5-flash")
+GEMINI_MODEL = genai.GenerativeModel("gemini-3.5-flash")
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 
 
 # ---------- Node 1: fetch_repo_data ----------
 def fetch_repo_data(state: TweetBotState) -> dict:
-    """Fetches the README and runs it through the quality checker."""
+
     try:
         readme_text = fetch_readme(state["owner"], state["repo"])
         check = is_readme_ready(readme_text)
@@ -31,7 +31,7 @@ def fetch_repo_data(state: TweetBotState) -> dict:
 
 # ---------- Conditional gate ----------
 def is_ready_router(state: TweetBotState) -> str:
-    """Decides whether to continue to extraction or stop the run."""
+
     if state.get("error"):
         return "end"
     if state.get("readme_check", {}).get("ready"):
@@ -41,7 +41,7 @@ def is_ready_router(state: TweetBotState) -> str:
 
 # ---------- Node 2: extract_context ----------
 def extract_context(state: TweetBotState) -> dict:
-    """Pulls clean image URLs and a demo link out of the README."""
+
     check = state["readme_check"]
 
     fixed_images = []
@@ -60,7 +60,7 @@ def extract_context(state: TweetBotState) -> dict:
 
 # ---------- Node 3: generate_tweet ----------
 def generate_tweet(state: TweetBotState) -> dict:
-    """Calls Gemini to draft a build-in-public tweet from the repo context."""
+
     readme_snippet = state["readme_text"][:3000]
     demo_line = f"\nDemo link: {state['demo_link']}" if state.get("demo_link") else ""
 
@@ -88,11 +88,7 @@ Return ONLY the tweet text, nothing else."""
 
 # ---------- Node 4: request_approval ----------
 def request_approval(state: TweetBotState) -> dict:
-    """
-    Sends the draft to Telegram with Approve/Reject buttons, then pauses
-    the graph. Execution only continues once /telegram-webhook (in
-    main.py) resumes this exact run after you tap a button.
-    """
+
     send_approval_request(
         full_name=state["full_name"],
         draft_tweet=state["draft_tweet"],
@@ -124,7 +120,7 @@ def post_tweet(state: TweetBotState) -> dict:
 
 # ---------- Node 6: log_result ----------
 def log_result(state: TweetBotState) -> dict:
-    """Writes the final outcome back to your repo_status table."""
+
     final_status = "posted" if state.get("tweet_id") else "rejected"
 
     conn = psycopg2.connect(DATABASE_URL)

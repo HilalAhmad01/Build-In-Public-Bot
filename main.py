@@ -25,11 +25,7 @@ app_state = {}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    Runs once when the app boots (and once at shutdown).
-    Opens a single long-lived Postgres connection for the LangGraph
-    checkpointer and builds the graph, instead of doing this per-request.
-    """
+
     checkpointer_cm = PostgresSaver.from_conn_string(DATABASE_URL)
     checkpointer = checkpointer_cm.__enter__()
     checkpointer.setup()  # safe to call every startup, no-op if tables exist
@@ -96,9 +92,7 @@ async def webhook(
     config = {"configurable": {"thread_id": full_name}}
     initial_state = {"owner": owner, "repo": repo, "full_name": full_name}
 
-    # graph.invoke() is blocking (Postgres + Gemini calls), so push it onto
-    # a threadpool instead of running it directly on the event loop —
-    # otherwise a slow Gemini call would stall every other request.
+
     result = await run_in_threadpool(graph.invoke, initial_state, config=config)
 
     if "__interrupt__" in result:
@@ -111,19 +105,14 @@ async def webhook(
 
 @app.post("/telegram-webhook")
 async def telegram_webhook(request: Request):
-    """
-    Telegram calls this whenever you tap Approve/Reject on a message.
-    We parse which repo + decision the button represents, resume the
-    matching paused graph run, then edit the Telegram message to show
-    the outcome and remove the buttons.
-    """
+
     update = await request.json()
 
     callback_query = update.get("callback_query")
     if not callback_query:
         return {"status": "ignored"}
 
-    callback_data = callback_query["data"]  # e.g. "approve|HilalAhmad01/Minds-Eye"
+    callback_data = callback_query["data"]
     decision_raw, full_name = callback_data.split("|", 1)
     decision = "approved" if decision_raw == "approve" else "rejected"
 
