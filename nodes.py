@@ -1,16 +1,16 @@
 import os
-import re
 import psycopg2
 from langgraph.types import interrupt
 
 from state import TweetBotState
 from fetch_readme import fetch_readme          # your existing module
 from readme_checker import is_readme_ready     # your existing module
+from telegram_bot import send_approval_request
 
 import google.generativeai as genai
 
 genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-GEMINI_MODEL = genai.GenerativeModel("gemini-3.5-flash")
+GEMINI_MODEL = genai.GenerativeModel("gemini-1.5-flash")
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 
@@ -44,7 +44,6 @@ def extract_context(state: TweetBotState) -> dict:
     """Pulls clean image URLs and a demo link out of the README."""
     check = state["readme_check"]
 
-    # Convert GitHub 'blob' viewer links into real raw image URLs
     fixed_images = []
     for url in check.get("image_urls", []):
         raw_url = url.replace("github.com", "raw.githubusercontent.com").replace("/blob/", "/")
@@ -62,7 +61,7 @@ def extract_context(state: TweetBotState) -> dict:
 # ---------- Node 3: generate_tweet ----------
 def generate_tweet(state: TweetBotState) -> dict:
     """Calls Gemini to draft a build-in-public tweet from the repo context."""
-    readme_snippet = state["readme_text"][:3000]  # keep prompt lean
+    readme_snippet = state["readme_text"][:3000]
     demo_line = f"\nDemo link: {state['demo_link']}" if state.get("demo_link") else ""
 
     prompt = f"""You write short, punchy "build in public" tweets announcing a
@@ -90,17 +89,21 @@ Return ONLY the tweet text, nothing else."""
 # ---------- Node 4: request_approval ----------
 def request_approval(state: TweetBotState) -> dict:
     """
-    Pauses the graph here using LangGraph's interrupt mechanism.
-    Execution stops, state is checkpointed to Postgres, and this function
-    call effectively "returns" only when the graph is resumed externally
-    (e.g. by your Telegram bot's Approve button) with a Command(resume=...).
+    Sends the draft to Telegram with Approve/Reject buttons, then pauses
+    the graph. Execution only continues once /telegram-webhook (in
+    main.py) resumes this exact run after you tap a button.
     """
+    send_approval_request(
+        full_name=state["full_name"],
+        draft_tweet=state["draft_tweet"],
+        images=state.get("images", []),
+    )
+
     decision = interrupt({
         "draft_tweet": state["draft_tweet"],
         "images": state.get("images", []),
         "full_name": state["full_name"],
     })
-    # `decision` is whatever value the resume call passes in, e.g. "approved"
     return {"approval_status": decision}
 
 
@@ -113,11 +116,7 @@ def approval_router(state: TweetBotState) -> str:
 
 # ---------- Node 5: post_tweet ----------
 def post_tweet(state: TweetBotState) -> dict:
-    """
-    Placeholder for the X API call — wire this up once you've set up
-    X API credentials (the next build step after this pipeline works).
-    """
-    # TODO: replace with real tweepy / twitter-api-v2 call
+
     print(f"[POST_TWEET STUB] Would post:\n{state['draft_tweet']}")
     fake_tweet_id = "PENDING_X_API_INTEGRATION"
     return {"tweet_id": fake_tweet_id}

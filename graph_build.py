@@ -14,11 +14,7 @@ from nodes import (
 
 
 def build_graph(checkpointer):
-    """
-    Wires the graph together and compiles it with a checkpointer that the
-    CALLER opened and is responsible for keeping alive (see run_pipeline.py).
-    This function no longer manages the Postgres connection itself.
-    """
+
     builder = StateGraph(TweetBotState)
 
     builder.add_node("fetch_repo_data", fetch_repo_data)

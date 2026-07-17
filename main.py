@@ -8,8 +8,10 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from langgraph.checkpoint.postgres import PostgresSaver
+from langgraph.types import Command
 
 from graph_build import build_graph
+from telegram_bot import answer_callback_query, edit_message_after_decision
 
 load_dotenv()
 
@@ -105,3 +107,44 @@ async def webhook(
 
     print(f"{full_name}: run finished without pausing (README likely not ready yet)")
     return {"status": "not_ready", "repo": full_name}
+
+
+@app.post("/telegram-webhook")
+async def telegram_webhook(request: Request):
+    """
+    Telegram calls this whenever you tap Approve/Reject on a message.
+    We parse which repo + decision the button represents, resume the
+    matching paused graph run, then edit the Telegram message to show
+    the outcome and remove the buttons.
+    """
+    update = await request.json()
+
+    callback_query = update.get("callback_query")
+    if not callback_query:
+        return {"status": "ignored"}
+
+    callback_data = callback_query["data"]  # e.g. "approve|HilalAhmad01/Minds-Eye"
+    decision_raw, full_name = callback_data.split("|", 1)
+    decision = "approved" if decision_raw == "approve" else "rejected"
+
+    graph = app_state["graph"]
+    config = {"configurable": {"thread_id": full_name}}
+
+    await run_in_threadpool(graph.invoke, Command(resume=decision), config=config)
+
+    answer_callback_query(callback_query["id"], f"Marked as {decision}")
+
+    message = callback_query["message"]
+    has_photo = "photo" in message
+    original_text = message.get("caption") or message.get("text") or ""
+
+    edit_message_after_decision(
+        chat_id=message["chat"]["id"],
+        message_id=message["message_id"],
+        original_text=original_text,
+        decision=decision,
+        has_photo=has_photo,
+    )
+
+    print(f"{full_name}: resumed with decision={decision}")
+    return {"status": "processed", "decision": decision, "repo": full_name}

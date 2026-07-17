@@ -1,9 +1,3 @@
-"""
-Standalone test script — no webhook, no Telegram yet.
-Run this to prove the graph works end to end, manually approving
-via the terminal instead of a real Telegram button.
-"""
-
 import os
 from dotenv import load_dotenv
 load_dotenv()
